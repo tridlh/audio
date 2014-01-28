@@ -24,10 +24,29 @@
 #include <sys/types.h>
 #include <getopt.h>
 #include <sys/time.h>
+#include <alsa/asoundlib.h>
 
 #define FILENAMESZ  	40
 #define WAVHEADSZ		44
 #define FORMATTAG_PCM	0x0001
+
+#define DEFAULT_WIDTH   16
+#define DEFAULT_CHNUM   2
+#define DEFAULT_SRATE   44100
+#define DEFAULT_LENTH   10
+#define DEFAULT_FREQ    300
+#define DEFAULT_NAMEI   "in.wav"
+#define DEFAULT_NAMEO   "out.wav"
+
+//alsa record and play device, review with aplay -l, cat /proc/asound/cards and cat /proc/asound/devices
+#define ALSA_CAPTDEV    "hw:0,0"
+#define ALSA_PLAYDEV    "hw:0,0"
+#define ALSA_BUFSZ      1024*8
+
+#define RANGE_8         0x7F
+#define RANGE_16        0x7FFF
+#define RANGE_24        0x7FFFFF
+#define RANGE_32        0x7FFFFFFF
 
 #define PI              3.1416
 
@@ -45,10 +64,10 @@ typedef struct {
 }   s_clock;
 
 typedef struct {
-	Uint32 riffid;
+	Uint8  riffid[4];
 	Uint32 riffsz;
-	Uint32 waveid;
-	Uint32 fmtid;
+	Uint8  waveid[4];
+	Uint8  fmtid[4];
 	Uint32 fmtsz;
 	Uint16 ftag;
 	Uint16 ch;
@@ -56,24 +75,39 @@ typedef struct {
 	Uint32 bps;
 	Uint16 ba;
 	Uint16 wid;
-	Uint32 dataid;
+	Uint8  dataid[4];
 	Uint32 datasz;
 	Uint32 pad; 
-}	s_wavhead;
+}	s_waveinfo;
+
+typedef struct {
+    char playdev[FILENAMESZ];
+    char captdev[FILENAMESZ];
+    snd_pcm_stream_t stream;
+    snd_pcm_access_t access;
+    snd_pcm_format_t format;
+    snd_pcm_t *playback_handle;
+    snd_pcm_hw_params_t *hw_params;
+    int dir;                        //play/record
+    int nb;                         //nonblock
+}   s_alsainfo;
 
 typedef struct {
 	int ibn;		//is big endian
 	int wid;		//width
 	int sr;			//sample rate
 	int ch;			//channel
-	int len;		//length
+	int len;		//length in seconds
 	int freq;		//frequency
 	int op;			//1. create pcm 2. play wav 3. create record 4. codec amr
 	int ns;			//number of sample
-	int sz;			//size in bytes
+	int sz;			//data size in bytes
+	int fsize;      //file size in bytes
 	char fnamei[FILENAMESZ];
 	char fnameo[FILENAMESZ];
-	s_wavhead wh;
+    s_alsainfo a;
+	s_waveinfo w;
+    char *file;
 	char *head;
 	char *data;
 	int *enc;

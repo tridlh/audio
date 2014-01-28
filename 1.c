@@ -36,13 +36,19 @@ width, and capsulate as .wav.
 void init(s_audinfo *i);
 void uninit(s_audinfo *i);
 int argproc(s_audinfo *i, int argc, char *argv[]);
-int newsingle(s_audinfo *i);
-int newrecord(s_audinfo *i);
-int play(s_audinfo *i);
+int newwav(s_audinfo *i);
+int captwav(s_audinfo *i);
+int playwav(s_audinfo *i);
+int parsewav(s_audinfo *i);
+int alsa_prepare(s_audinfo *i);
+int clear_struct(s_audinfo *i);
+int initnewf(s_audinfo *i);
+int initplay(s_audinfo *i);
+int initcapt(s_audinfo *i);
+
 int encode(s_audinfo *i);
 int decode(s_audinfo *i);
-int ininfo(s_audinfo *i);
-int outinfo(s_audinfo *i);
+int audinfo(s_audinfo *i);
 
 Uint16 str2int16(Uint8 *buf, int endian);
 Uint32 str2int32(Uint8 *buf, int endian);
@@ -50,7 +56,6 @@ void int2str16(Uint8* buf, int val, int endian);
 void int2str32(Uint8* buf, int val, int endian);
 
 int s2i(Uint8 *s, int cnt);
-
 
 int main(int argc, char *argv[])
 {
@@ -64,15 +69,16 @@ int main(int argc, char *argv[])
 
 	switch (inf.op) {
 		case 1:
-			ret = newsingle(&inf);
+			ret = newwav(&inf);
 			break;
 		case 2:
-			ret = play(&inf);
+			ret = playwav(&inf);
 			break;
 		case 3:
-			ret = newrecord(&inf);
+			ret = captwav(&inf);
 			break;
 		default:
+            Loge("not supported operation %d", inf.op);
 			break;
 	}
 	if (ret < 0) goto finish;
@@ -84,20 +90,125 @@ finish:
     return 0;
 }
 
-int newsingle(s_audinfo *i) {
+int parsewav(s_audinfo *i) {
+    int ret = 0;
+    int fsize = 0;
+    FILE *fp = NULL;
+    
+    if ((fp = fopen(i->fnamei, "rb")) == NULL){
+        fprintf (stderr, "Input file '%s' does not exist !!\n", i->fnamei);
+        ret = -1;
+        goto end;
+    } else {
+        fseek(fp, 0L, SEEK_END);
+        i->fsize = ftell(fp);
+        rewind(fp);
+        Log("Open inputfile '%s' [%d bytes] succeed.", i->fnamei, i->fsize);
+    }
+        
+    if ((i->file = calloc(sizeof(char),i->fsize)) == NULL) {ret = -1; goto end;}
+    
+    ret = fread(i->file, sizeof(char), i->fsize, fp);
+    Log("read: %x, filesize: %x", ret, i->fsize);
+    if (ret != i->fsize) {
+        Loge("ferror %x feof %x", ferror(fp), feof(fp));
+        ret = -1;
+        goto end;
+    } else {
+        ret = 0;
+    }
+
+    if ((i->head = calloc(sizeof(char), WAVHEADSZ)) == NULL) {ret = -1; goto end;}
+    memcpy(i->head, i->file, WAVHEADSZ);
+
+    int idx = 0;
+    strncpy(i->w.riffid, i->head + idx, 4);
+    idx += 4;
+    if (0 != strncmp(i->w.riffid, "RIFF", 4)) {
+        Loge("riffid not match: '%c' '%c' '%c' '%c'", i->w.riffid[0], i->w.riffid[1], i->w.riffid[2], i->w.riffid[3]);
+        goto end;
+    }
+    
+    i->w.riffsz = str2int32(i->head + idx, i->ibn);
+    idx += 4;
+    i->sz = i->w.riffsz + 8 - WAVHEADSZ;
+
+    strncpy(i->w.waveid, i->head + idx, 4);
+    idx += 4;
+    if (0 != strncmp(i->w.waveid, "WAVE", 4)) {
+        Loge("waveid not match");
+        goto end;
+    }
+
+    strncpy(i->w.fmtid, i->head + idx, 4);
+    idx += 4;
+    if (0 != strncmp(i->w.fmtid, "fmt ", 4)) {
+        Loge("fmtid not match");
+        goto end;
+    }
+
+    i->w.fmtsz  = str2int32(i->head + idx, i->ibn);
+    idx += 4;
+
+    i->w.ftag   = str2int16(i->head + idx, i->ibn);
+    idx += 2;
+
+    i->w.ch     = str2int16(i->head + idx, i->ibn);
+    idx += 2;
+    i->ch = i->w.ch;
+
+    i->w.sps    = str2int32(i->head + idx, i->ibn);
+    idx += 4;
+    i->sr = i->w.sps;
+
+    i->w.bps    = str2int32(i->head + idx, i->ibn);
+    idx += 4;
+
+    i->w.ba     = str2int16(i->head + idx, i->ibn);
+    idx += 2;
+
+    i->w.wid    = str2int16(i->head + idx, i->ibn);
+    idx += 2;
+    i->wid = i->w.wid;
+
+    strncpy(i->w.dataid, i->head + idx, 4);
+    idx += 4;
+    if (0 != strncmp(i->w.dataid, "data", 4)) {
+        Loge("dataid not match");
+        goto end;
+    }
+
+    i->w.datasz = str2int32(i->head + idx, i->ibn);
+    idx += 4;
+
+    if ((i->data = calloc(sizeof(char),i->sz)) == NULL) {ret = -1; goto end;}
+    memcpy(i->data, i->file + idx, i->sz);
+    
+end:
+    fclose(fp);
+    audinfo(i);
+    return ret;
+}
+
+
+int newwav(s_audinfo *i) {
 	int ret = 0;
+
+    initnewf(i);
+    
 	int width = i->wid / 8;
 	i->ns = i->sr * i->len;
 	i->sz = i->ns * i->ch * width; 
-	i->wh.pad = i->sz & 0x1;
+	i->w.pad = i->sz & 0x1;
 	
 	if ((i->head = calloc(sizeof(char), WAVHEADSZ)) == NULL) {ret = -1; goto end;}
+    if ((i->data = calloc(sizeof(char), i->sz)) == NULL) {ret = -1; goto end;}
 
 	int idx = 0;
 	strncpy(i->head + idx, "RIFF", 4);
 	idx += 4;
 
-	int2str32(i->head + idx, WAVHEADSZ - 8 + i->sz + i->wh.pad, i->ibn);
+	int2str32(i->head + idx, WAVHEADSZ - 8 + i->sz + i->w.pad, i->ibn);
 	idx += 4;
 
 	strncpy(i->head + idx, "WAVE", 4);
@@ -132,15 +243,13 @@ int newsingle(s_audinfo *i) {
 
 	int2str32(i->head + idx, i->ns * i->ch * width, i->ibn);
 	idx += 4;
-
-	if ((i->data = calloc(sizeof(char), i->sz)) == NULL) {ret = -1; goto end;}
 	
 	int val = 0;
 	int cnt = 0;
 	double t = 0.0;
 	double dt = (double)1.0 / i->sr;
 	while (cnt < i->ns) {
-		val = (Uint16) (0x7fff * sin(2 * PI * t * i->freq));
+		val = (Uint16) (RANGE_16 * sin(2 * PI * t * i->freq));
 		t += dt;
 		switch (i->ch) {
 			case 1:
@@ -170,41 +279,265 @@ int newsingle(s_audinfo *i) {
 
 	fwrite(i->head, sizeof(char), WAVHEADSZ, fpout);
 	fwrite(i->data, sizeof(char), i->sz, fpout);
-	if (i->wh.pad)
-		fwrite(&(i->wh.pad), sizeof(char), 1, fpout);
+	if (i->w.pad)
+		fwrite(&(i->w.pad), sizeof(char), 1, fpout);
 
 	fclose(fpout);
 end:
+    audinfo(i);
 	Log("done");
 	return ret;
 }
 
-int newrecord(s_audinfo *i) {
-
+int captwav(s_audinfo *i) {
+    int ret = 0;
+    initcapt(i);
+    return ret;
 }
-int play(s_audinfo *i) {
 
+int playwav(s_audinfo *i) {
+    int ret = 0;
+
+    initplay(i);
+
+    /* read pcm data to buffer*/
+    if ((ret = parsewav(i)) != 0) {
+        fprintf (stderr, "parse wav error(%s)\n", 
+             snd_strerror (ret));
+        goto end;
+    }
+
+    /* play pcm through alsa api*/
+    int idx = 0;
+    snd_pcm_t *playback_handle = i->a.playback_handle;
+       
+    if ((ret = snd_pcm_open (&playback_handle, i->a.playdev, i->a.stream, 0)) < 0) {
+        fprintf (stderr, "cannot open audio device %s (%s)\n", 
+             i->a.playdev,
+             snd_strerror (ret));
+        goto end;
+    }
+
+    snd_pcm_hw_params_t *hw_params = i->a.hw_params;
+          
+    if ((ret = snd_pcm_hw_params_malloc (&hw_params)) < 0) {
+        fprintf (stderr, "cannot allocate hardware parameter structure (%s)\n",
+             snd_strerror (ret));
+        goto end;
+    }
+             
+    if ((ret = snd_pcm_hw_params_any (playback_handle, hw_params)) < 0) {
+        fprintf (stderr, "cannot initialize hardware parameter structure (%s)\n",
+             snd_strerror (ret));
+        goto end;
+    }
+    
+    if ((ret = snd_pcm_hw_params_set_access (playback_handle, hw_params, i->a.access)) < 0) {
+        fprintf (stderr, "cannot set access type (%s)\n",
+             snd_strerror (ret));
+        goto end;
+    }
+   
+    if ((ret = snd_pcm_hw_params_set_format (playback_handle, hw_params, i->a.format)) < 0) {
+        fprintf (stderr, "cannot set sample format (%s)\n",
+             snd_strerror (ret));
+        goto end;
+    }
+     
+    if ((ret = snd_pcm_hw_params_set_rate_near (playback_handle, hw_params, &(i->sr), &(i->a.dir))) < 0) {
+        fprintf (stderr, "cannot set sample rate (%s)\n",
+             snd_strerror (ret));
+        goto end;
+    }
+   
+    if ((ret = snd_pcm_hw_params_set_channels (playback_handle, hw_params, i->ch)) < 0) {
+        fprintf (stderr, "cannot set channel count (%s)\n",
+             snd_strerror (ret));
+        goto end;
+    }
+     
+    if ((ret = snd_pcm_hw_params (playback_handle, hw_params)) < 0) {
+        fprintf (stderr, "cannot set parameters (%s)\n",
+             snd_strerror (ret));
+        goto end;
+    }
+     
+    snd_pcm_hw_params_free (hw_params);   
+
+    if ((ret = snd_pcm_nonblock (playback_handle, i->a.nb)) < 0) {
+        fprintf (stderr, "cannot set parameters (%s)\n",
+             snd_strerror (ret));
+        goto end;
+    }
+
+    if ((ret = snd_pcm_prepare (playback_handle)) < 0) {
+        fprintf (stderr, "cannot prepare audio interface for use (%s)\n",
+             snd_strerror (ret));
+        goto end;
+    }
+
+    idx = 0;
+    while (idx < (i->sz - ALSA_BUFSZ)) {
+        if ((ret = snd_pcm_writei (playback_handle, i->data + idx, ALSA_BUFSZ)) != ALSA_BUFSZ) {
+            fprintf (stderr, "write to audio interface failed (%s)\n",
+                 snd_strerror (ret));
+            goto end;
+        }
+        idx += ALSA_BUFSZ;
+    }
+    Log("idx %d sz %d gap %d", idx, i->sz, i->sz - idx);
+    if ((ret = snd_pcm_writei (playback_handle, i->data + idx, i->sz - idx)) != (i->sz - idx)) {
+        fprintf (stderr, "write to audio interface failed (%s)\n",
+             snd_strerror (ret));
+        goto end;
+    }
+    
+    snd_pcm_close (playback_handle);
+
+end:
+    return ret;
 }
+
+int alsa_prepare(s_audinfo *i) {
+    int ret = 0;
+    snd_pcm_t *playback_handle = i->a.playback_handle;
+    snd_pcm_hw_params_t *hw_params = i->a.hw_params;
+          
+    if ((ret = snd_pcm_hw_params_malloc (&hw_params)) < 0) {
+        fprintf (stderr, "cannot allocate hardware parameter structure (%s)\n",
+             snd_strerror (ret));
+        goto end;
+    }
+             
+    if ((ret = snd_pcm_hw_params_any (playback_handle, hw_params)) < 0) {
+        fprintf (stderr, "cannot initialize hardware parameter structure (%s)\n",
+             snd_strerror (ret));
+        goto end;
+    }
+    
+    if ((ret = snd_pcm_hw_params_set_access (playback_handle, hw_params, i->a.access)) < 0) {
+        fprintf (stderr, "cannot set access type (%s)\n",
+             snd_strerror (ret));
+        goto end;
+    }
+   
+    if ((ret = snd_pcm_hw_params_set_format (playback_handle, hw_params, i->a.format)) < 0) {
+        fprintf (stderr, "cannot set sample format (%s)\n",
+             snd_strerror (ret));
+        goto end;
+    }
+     
+    if ((ret = snd_pcm_hw_params_set_rate_near (playback_handle, hw_params, &(i->sr), &(i->a.dir))) < 0) {
+        fprintf (stderr, "cannot set sample rate (%s)\n",
+             snd_strerror (ret));
+        goto end;
+    }
+   
+    if ((ret = snd_pcm_hw_params_set_channels (playback_handle, hw_params, i->ch)) < 0) {
+        fprintf (stderr, "cannot set channel count (%s)\n",
+             snd_strerror (ret));
+        goto end;
+    }
+     
+    if ((ret = snd_pcm_hw_params (playback_handle, hw_params)) < 0) {
+        fprintf (stderr, "cannot set parameters (%s)\n",
+             snd_strerror (ret));
+        goto end;
+    }
+     
+    snd_pcm_hw_params_free (hw_params);
+    
+end:
+    return ret;
+}
+
+int audinfo(s_audinfo *i) {
+    int ret = 0;
+    Log("is big endian:         %8d", i->ibn);
+    Log("sample width in bits:  %8d", i->wid);
+    Log("sample rate per second:%8d", i->sr);
+    Log("channel number:        %8d", i->ch);
+    Log("clip length in seconds:%8d", i->len);
+    Log("single frequency in HZ:%8d", i->freq);
+    Log("operation:             %8d", i->op);
+    Log("number of sample:      %8d", i->ns);
+    Log("clip size in Bytes:    %8d", i->sz);
+    Log("file size in Bytes:    %8d", i->fsize);
+    Log("alsa stream type:      %8d", i->a.stream);
+    Log("alsa access type:      %8d", i->a.access);
+    Log("alsa format type:      %8d", i->a.format);
+    Log("alsa direction:        %8d", i->a.dir);
+    Log("alsa non-block:        %8d", i->a.nb);
+    Log("wav riffid:     '%c' '%c' '%c' '%c'", i->w.riffid[0],i->w.riffid[1],i->w.riffid[2],i->w.riffid[3]);
+    Log("wav riff size:         %8d", i->w.riffsz);
+    Log("wav waveid:     '%c' '%c' '%c' '%c'", i->w.waveid[0],i->w.waveid[1],i->w.waveid[2],i->w.waveid[3]);
+    Log("wav fmt id:     '%c' '%c' '%c' '%c'", i->w.fmtid[0], i->w.fmtid[1], i->w.fmtid[2], i->w.fmtid[3]);
+    Log("wav fmt size in Bytes: %8d", i->w.fmtsz);
+    Log("wav ftag:            0x%8x", i->w.ftag);
+    Log("wav channel number:    %8d", i->w.ch);
+    Log("wav sample per seconds:%8d", i->w.sps);
+    Log("wav bytes per seconds: %8d", i->w.bps);
+    Log("wav bytes align:       %8d", i->w.ba);
+    Log("wav sample width:      %8d", i->w.wid);
+    Log("wav dataid:     '%c' '%c' '%c' '%c'", i->w.dataid[0],i->w.dataid[1],i->w.dataid[2],i->w.dataid[3]);
+    Log("wav data size in Bytes:%8d", i->w.datasz);
+    Log("wav pad sign:          %8d", i->w.pad);
+    return ret;
+}
+
 /*
 int encode(s_audinfo *i);
 int decode(s_audinfo *i);
-int ininfo(s_audinfo *i);
-int outinfo(s_audinfo *i);
 */
+int clear_struct(s_audinfo *i) {
+    int ret = 0;
+	memset(i, 0, sizeof(s_audinfo));	
+    return ret;
+}
+
+int initnewf(s_audinfo *i) {
+    int ret = 0;
+	if (0 == i->wid) {i->wid = DEFAULT_WIDTH;}
+	if (0 == i->sr)  {i->sr = DEFAULT_SRATE;}
+	if (0 == i->ch)  {i->ch = DEFAULT_CHNUM;}
+	if (0 == i->len) {i->len = DEFAULT_LENTH;}
+	if (0 == i->freq){i->freq = DEFAULT_FREQ;}
+    return ret;
+}
+
+int initplay(s_audinfo *i) {
+    int ret = 0;
+    i->a.stream = SND_PCM_STREAM_PLAYBACK;
+    i->a.access = SND_PCM_ACCESS_RW_INTERLEAVED;
+    i->a.format = SND_PCM_FORMAT_S16_LE;  
+    i->a.dir = 0;
+    i->a.nb = 0;
+    return ret;
+}
+
+int initcapt(s_audinfo *i) {
+    int ret = 0;
+    i->a.stream = SND_PCM_STREAM_PLAYBACK;
+    i->a.access = SND_PCM_ACCESS_RW_INTERLEAVED;
+    i->a.format = SND_PCM_FORMAT_S16_LE;
+    i->a.dir = 1;
+    return ret;
+}
 
 void init(s_audinfo *i) {
-	memset(i, 0, sizeof(s_audinfo));
-	Log("%d bytes cleared", sizeof(s_audinfo));
-	i->wid = 16;
-	i->sr = 44100;
-	i->ch = 2;
-	i->len = 10;
-	i->freq = 300;
-	strcpy(i->fnamei, "in.wav");
-	strcpy(i->fnameo, "out.wav");
+    clear_struct(i);
+    Log("%ld bytes cleared", sizeof(s_audinfo));
+    strcpy(i->fnamei, DEFAULT_NAMEI);
+    strcpy(i->fnameo, DEFAULT_NAMEO);
+    strcpy(i->a.playdev, ALSA_PLAYDEV);
+    strcpy(i->a.captdev, ALSA_CAPTDEV);
 }
 
 void uninit(s_audinfo *i) {
+    if (i->file != NULL) {
+		free(i->file);
+		i->file == NULL;
+	}
 	if (i->head != NULL) {
 		free(i->head);
 		i->head == NULL;
@@ -214,7 +547,6 @@ void uninit(s_audinfo *i) {
 		i->data = NULL;
 	}
 }
-
 
 int argproc(s_audinfo *i, int argc, char *argv[]) {
     int ret = 0;
@@ -276,7 +608,7 @@ int argproc(s_audinfo *i, int argc, char *argv[]) {
             break;
 
         case 'n':
-            printf ("option %c with value '%s' len %d\n", c, optarg, strlen(optarg));
+            printf ("option %c with value '%s' len %ld\n", c, optarg, strlen(optarg));
             if (strlen(optarg) <  FILENAMESZ) {
                 memset(i->fnameo, 0, FILENAMESZ);
                 strncpy(i->fnameo, optarg, strlen(optarg));
@@ -287,7 +619,7 @@ int argproc(s_audinfo *i, int argc, char *argv[]) {
             break;
 
 		case 'p':
-			printf ("option %c with value '%s' len %d\n", c, optarg, strlen(optarg));
+			printf ("option %c with value '%s' len %ld\n", c, optarg, strlen(optarg));
 			if (strlen(optarg) <  FILENAMESZ) {
                 memset(i->fnamei, 0, FILENAMESZ);
                 strncpy(i->fnamei, optarg, strlen(optarg));
@@ -298,7 +630,7 @@ int argproc(s_audinfo *i, int argc, char *argv[]) {
 			break;
 			
         case 'r':
-            printf ("option %c with value '%s' len %d\n", c, optarg, strlen(optarg));
+            printf ("option %c with value '%s' len %ld\n", c, optarg, strlen(optarg));
             if (strlen(optarg) <  FILENAMESZ) {
                 memset(i->fnameo, 0, FILENAMESZ);
                 strncpy(i->fnameo, optarg, strlen(optarg));

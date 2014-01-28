@@ -10,4 +10,6 @@ width, and capsulate as .wav.
 	5. encapsulate as mp4, 3gp format
 
 e.g. 
-	gcc 1.c -lm;./a.out -n 1.wav
+	gcc 1.c -lm -lasound
+	./a.out -n 1.wav
+	./a.out -p 1.wav
