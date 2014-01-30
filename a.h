@@ -41,7 +41,7 @@
 //alsa record and play device, review with aplay -l, cat /proc/asound/cards and cat /proc/asound/devices
 #define ALSA_CAPTDEV    "hw:0,0"
 #define ALSA_PLAYDEV    "hw:0,0"
-#define ALSA_BUFSZ      1024*8
+#define ALSA_BUFSZ      1024*16
 
 #define RANGE_8         0x7F
 #define RANGE_16        0x7FFF

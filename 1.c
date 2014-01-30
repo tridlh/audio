@@ -131,7 +131,6 @@ int parsewav(s_audinfo *i) {
     
     i->w.riffsz = str2int32(i->head + idx, i->ibn);
     idx += 4;
-    i->sz = i->w.riffsz + 8 - WAVHEADSZ;
 
     strncpy(i->w.waveid, i->head + idx, 4);
     idx += 4;
@@ -181,6 +180,12 @@ int parsewav(s_audinfo *i) {
     i->w.datasz = str2int32(i->head + idx, i->ibn);
     idx += 4;
 
+    i->sz = i->w.datasz;
+    i->ns = i->sz / i->ch * 8 / i->wid;
+    i->len = i->sz / i->ch / i->sr * 8 / i->wid;
+    if (i->sz != (i->w.riffsz + 8 - WAVHEADSZ)) 
+        i->w.pad = i->w.riffsz + 8 - WAVHEADSZ - i->sz;
+
     if ((i->data = calloc(sizeof(char),i->sz)) == NULL) {ret = -1; goto end;}
     memcpy(i->data, i->file + idx, i->sz);
     
@@ -206,42 +211,55 @@ int newwav(s_audinfo *i) {
 
 	int idx = 0;
 	strncpy(i->head + idx, "RIFF", 4);
+    strncpy(i->w.riffid, i->head + idx, 4);
 	idx += 4;
 
 	int2str32(i->head + idx, WAVHEADSZ - 8 + i->sz + i->w.pad, i->ibn);
+    i->w.riffsz = str2int32(i->head + idx, i->ibn);
 	idx += 4;
 
 	strncpy(i->head + idx, "WAVE", 4);
+    strncpy(i->w.waveid, i->head + idx, 4);
 	idx += 4;
 
 	strncpy(i->head + idx, "fmt ", 4);
+    strncpy(i->w.fmtid, i->head + idx, 4);
 	idx += 4;
 
 	int2str32(i->head + idx, 16, i->ibn);
+    i->w.fmtsz  = str2int32(i->head + idx, i->ibn);
 	idx += 4;
 
 	int2str16(i->head + idx, FORMATTAG_PCM, i->ibn);
+    i->w.ftag   = str2int16(i->head + idx, i->ibn);
 	idx += 2;
 
 	int2str16(i->head + idx, i->ch, i->ibn);
+    i->w.ch     = str2int16(i->head + idx, i->ibn);
 	idx += 2;
 
 	int2str32(i->head + idx, i->sr, i->ibn);
+    i->w.sps    = str2int32(i->head + idx, i->ibn);
 	idx += 4;
 
 	int2str32(i->head + idx, i->sr * i->ch * width, i->ibn);
+    i->w.bps    = str2int32(i->head + idx, i->ibn);
 	idx += 4;
 
 	int2str16(i->head + idx, i->ch * width, i->ibn);
+    i->w.ba     = str2int16(i->head + idx, i->ibn);
 	idx += 2;
 
 	int2str16(i->head + idx, i->wid, i->ibn);
+    i->w.wid    = str2int16(i->head + idx, i->ibn);
 	idx += 2;
 
 	strncpy(i->head + idx, "data", 4);
+    strncpy(i->w.dataid, i->head + idx, 4);
 	idx += 4;
 
 	int2str32(i->head + idx, i->ns * i->ch * width, i->ibn);
+    i->w.datasz = str2int32(i->head + idx, i->ibn);
 	idx += 4;
 	
 	int val = 0;
@@ -378,6 +396,7 @@ int playwav(s_audinfo *i) {
 
     idx = 0;
     while (idx < (i->sz - ALSA_BUFSZ)) {
+        Log("idx %x %d sz %x buf %x", idx, idx, i->sz, ALSA_BUFSZ);
         if ((ret = snd_pcm_writei (playback_handle, i->data + idx, ALSA_BUFSZ)) != ALSA_BUFSZ) {
             fprintf (stderr, "write to audio interface failed (%s)\n",
                  snd_strerror (ret));
