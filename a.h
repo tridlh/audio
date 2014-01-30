@@ -25,6 +25,7 @@
 #include <getopt.h>
 #include <sys/time.h>
 #include <alsa/asoundlib.h>
+#include <sys/signal.h>
 
 #define FILENAMESZ  	40
 #define WAVHEADSZ		44
@@ -86,7 +87,8 @@ typedef struct {
     snd_pcm_stream_t stream;
     snd_pcm_access_t access;
     snd_pcm_format_t format;
-    snd_pcm_t *playback_handle;
+    snd_pcm_t *playback_handle;    
+    snd_pcm_t *capture_handle;
     snd_pcm_hw_params_t *hw_params;
     int dir;                        //play/record
     int nb;                         //nonblock
