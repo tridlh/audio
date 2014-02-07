@@ -328,14 +328,14 @@ int captwav(s_audinfo *i) {
 
     /* init buffer to read from device */
     if ((i->head = calloc(sizeof(char), WAVHEADSZ)) == NULL) {ret = -1; goto end;}
-    if ((i->data = calloc(sizeof(char), ALSA_BUFSZ)) == NULL) {ret = -1; goto end;}
+    if ((i->data = calloc(sizeof(char), ALSA_CBUFSZ)) == NULL) {ret = -1; goto end;}
     fwrite(i->head, sizeof(char), WAVHEADSZ, fpout);
 Log("1");
     /* capture pcm through alsa api */
     int idx = 0;
     snd_pcm_t *capture_handle = i->a.capture_handle;
        
-    if ((ret = snd_pcm_open (&capture_handle, i->a.captdev, i->a.stream, 0)) < 0) {
+    if ((ret = snd_pcm_open (&capture_handle, i->a.captdev, i->a.stream, i->a.nb)) < 0) {
         fprintf (stderr, "cannot open audio device %s (%s)\n", 
              i->a.playdev,
              snd_strerror (ret));
@@ -408,8 +408,12 @@ Log("2");
                  snd_strerror (ret));
             goto end;
         } else {
-            fwrite(i->data, sizeof(char), ret, fpout);
             i->sz += ret;
+            if (i->sz > ALSA_CBUFSZ) {
+                i->sz = ret;
+                fseek(fpout, 44L, SEEK_SET);
+            }
+            fwrite(i->data, sizeof(char), ret, fpout); 
         }
     }
     snd_pcm_close (capture_handle);    
@@ -422,6 +426,7 @@ Log("4");
     fclose(fpout);
 end:
 Log("5 %d", i->sz);
+    audinfo(i);
     stopsign = 0;
     return ret;
 }
@@ -441,13 +446,14 @@ int playwav(s_audinfo *i) {
     int idx = 0;
     snd_pcm_t *playback_handle = i->a.playback_handle;
        
-    if ((ret = snd_pcm_open (&playback_handle, i->a.playdev, i->a.stream, 0)) < 0) {
+    if ((ret = snd_pcm_open (&playback_handle, i->a.playdev, i->a.stream, i->a.nb)) < 0) {
         fprintf (stderr, "cannot open audio device %s (%s)\n", 
              i->a.playdev,
              snd_strerror (ret));
         goto end;
     }
 
+#if 0
     snd_pcm_hw_params_t *hw_params = i->a.hw_params;
           
     if ((ret = snd_pcm_hw_params_malloc (&hw_params)) < 0) {
@@ -505,22 +511,58 @@ int playwav(s_audinfo *i) {
              snd_strerror (ret));
         goto end;
     }
+#elif 1
+    if ((ret = snd_pcm_set_params(playback_handle,
+                                  i->a.format,
+                                  i->a.access,
+                                  i->ch,
+                                  i->sr,
+                                  0,
+                                  500000)) < 0) {   /* 0.5sec */
+        printf("Playback open error: %s\n", snd_strerror(ret));
+        goto end;
+    }
+#else
+    alsa_prepare(i);
+#endif
 
     idx = 0;
-    while (idx < (i->sz - ALSA_BUFSZ)) {
-        Log("idx %x %d sz %x buf %x", idx, idx, i->sz, ALSA_BUFSZ);
-        if ((ret = snd_pcm_writei (playback_handle, i->data + idx, ALSA_BUFSZ)) != ALSA_BUFSZ) {
+    if (i->sz > ALSA_BUFSZ) {
+        Log("i->sz %d > bufsize %d", i->sz, ALSA_BUFSZ);
+        while (idx < (i->sz - ALSA_BUFSZ)) {
+            //Log("idx %x %d sz %x buf %x", idx, idx, i->sz, ALSA_BUFSZ);
+            ret = snd_pcm_writei (playback_handle, i->data + idx, ALSA_BUFSZ);
+            //Log("ret %d", ret);
+            if (ret < 0) {
+                ret = snd_pcm_recover(playback_handle, ret, 0);
+            }
+            //Log("idx %x %d sz %x buf %x idx %d ret %d", idx, idx, i->sz, ALSA_BUFSZ, idx, ret);
+            #if 0
+            if ((ret = snd_pcm_writei (playback_handle, i->data + idx, ALSA_BUFSZ)) != ALSA_BUFSZ) {
+                fprintf (stderr, "write to audio interface failed (%s)\n",
+                     snd_strerror (ret));
+                goto end;
+            }
+            #endif
+            idx += ALSA_BUFSZ;
+        }
+        Log("idx %d sz %d gap %d", idx, i->sz, i->sz - idx);
+        if ((ret = snd_pcm_writei (playback_handle, i->data + idx, i->sz - idx)) != (i->sz - idx)) {
             fprintf (stderr, "write to audio interface failed (%s)\n",
                  snd_strerror (ret));
             goto end;
         }
-        idx += ALSA_BUFSZ;
-    }
-    Log("idx %d sz %d gap %d", idx, i->sz, i->sz - idx);
-    if ((ret = snd_pcm_writei (playback_handle, i->data + idx, i->sz - idx)) != (i->sz - idx)) {
-        fprintf (stderr, "write to audio interface failed (%s)\n",
-             snd_strerror (ret));
-        goto end;
+    } else {
+        Log("i->sz %d < bufsize %d", i->sz, ALSA_BUFSZ);
+        ret = snd_pcm_writei (playback_handle, i->data + idx, i->sz);
+        Log("ret %d %x, i->sz %d < bufsize %d DONE!!!!", ret, ret, i->sz, ALSA_BUFSZ);
+        #if 0
+        if ((ret = snd_pcm_writei (playback_handle, i->data + idx, i->sz)) != i->sz) {
+                fprintf (stderr, "write to audio interface failed (%s)\n",
+                     snd_strerror (ret));
+                goto end;
+        }
+        #endif
     }
     
     snd_pcm_close (playback_handle);
@@ -586,9 +628,10 @@ int updatewavhead(s_audinfo *i, FILE *fp) {
     int ret = 0;
 
 	int width = i->wid / 8;
-	i->ns = i->sz / width;
+	i->ns = i->sz / width / i->ch;
     i->len = i->ns / i->sr;
 	i->w.pad = i->sz & 0x1;
+    i->fsize = i->sz + WAVHEADSZ;
 	
 	int idx = 0;
 	strncpy(i->head + idx, "RIFF", 4);
@@ -715,7 +758,6 @@ int initplay(s_audinfo *i) {
     i->a.access = SND_PCM_ACCESS_RW_INTERLEAVED;
     i->a.format = SND_PCM_FORMAT_S16_LE;  
     i->a.dir = 0;
-    i->a.nb = 0;
     return ret;
 }
 
@@ -771,6 +813,10 @@ int argproc(s_audinfo *i, int argc, char *argv[]) {
             {"verbose", 0, 0, 0},
             {"create", 1, 0, 'c'},
             {"file", 1, 0, 0},
+            {"length", 1, 0, 1001},
+            {"channel", 1, 0, 1002},
+            {"rate", 1, 0, 1003},
+            {"nonblock", 1, 0, 1004},
             {0, 0, 0, 0}
         };
     
@@ -815,7 +861,7 @@ int argproc(s_audinfo *i, int argc, char *argv[]) {
         case '?':
             break;
 
-        case 'n':
+        case 'n':   //new a wav
             printf ("option %c with value '%s' len %ld\n", c, optarg, strlen(optarg));
             if (strlen(optarg) <  FILENAMESZ) {
                 memset(i->fnameo, 0, FILENAMESZ);
@@ -826,7 +872,7 @@ int argproc(s_audinfo *i, int argc, char *argv[]) {
 			i->op = 1;
             break;
 
-		case 'p':
+		case 'p':   //play a wav
 			printf ("option %c with value '%s' len %ld\n", c, optarg, strlen(optarg));
 			if (strlen(optarg) <  FILENAMESZ) {
                 memset(i->fnamei, 0, FILENAMESZ);
@@ -837,7 +883,7 @@ int argproc(s_audinfo *i, int argc, char *argv[]) {
 			i->op = 2;
 			break;
 			
-        case 'r':
+        case 'r':   //record a wav
             printf ("option %c with value '%s' len %ld\n", c, optarg, strlen(optarg));
             if (strlen(optarg) <  FILENAMESZ) {
                 memset(i->fnameo, 0, FILENAMESZ);
@@ -847,7 +893,39 @@ int argproc(s_audinfo *i, int argc, char *argv[]) {
             }
 			i->op = 3;
             break;
-    
+
+        case 1001:   //length in seconds
+            printf ("option %d with value '%s' len %ld\n", c, optarg, strlen(optarg));
+            i->len = atoi(optarg);
+            if ((i->len < 0) || (i->len > 10)) {
+                Loge("Invalid file length: %d", i->len);
+            }
+            break;
+
+        case 1002:   //channel number
+            printf ("option %d with value '%s' len %ld\n", c, optarg, strlen(optarg));
+            i->ch = atoi(optarg);
+            if ((i->ch < 0) || (i->ch > 2)) {
+                Loge("Invalid channel number: %d", i->ch);
+            }
+            break;
+
+        case 1003:   //sample rate
+            printf ("option %d with value '%s' len %ld\n", c, optarg, strlen(optarg));
+            i->sr = atoi(optarg);
+            if ((i->sr < 0) || (i->sr > 19200)) {
+                Loge("Invalid sample rate: %d", i->sr);
+            }
+            break;
+
+        case 1004:   //nonblock
+            printf ("option %d with value '%s' len %ld\n", c, optarg, strlen(optarg));
+            i->a.nb = atoi(optarg);
+            if ((i->a.nb < 0) || (i->a.nb > 1)) {
+                Loge("Invalid nonblock sign: %d", i->a.nb);
+            }
+            break;
+
         default:
             printf ("?? getopt returned character code 0%o ??\n", c);
         }
