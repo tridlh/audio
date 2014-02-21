@@ -445,13 +445,22 @@ int playwav(s_audinfo *i) {
     /* play pcm through alsa api */
     int idx = 0;
     snd_pcm_t *playback_handle = i->a.playback_handle;
+    snd_pcm_info_t *info;
        
-    if ((ret = snd_pcm_open (&playback_handle, i->a.playdev, i->a.stream, i->a.nb)) < 0) {
+    if ((ret = snd_pcm_open (&playback_handle, i->a.playdev, i->a.stream, 0)) < 0) {
         fprintf (stderr, "cannot open audio device %s (%s)\n", 
              i->a.playdev,
              snd_strerror (ret));
         goto end1;
     }
+
+    snd_pcm_info_alloca(&info);
+
+    if ((ret = snd_pcm_info(playback_handle, info)) < 0) {
+		fprintf (stderr, "info error(%s)\n", 
+             snd_strerror (ret));
+		goto end1;
+	}
 
 #if 0
     snd_pcm_hw_params_t *hw_params = i->a.hw_params;
@@ -526,7 +535,10 @@ int playwav(s_audinfo *i) {
 //hw sw parameters
     snd_pcm_hw_params_t *hw_params = i->a.hw_params;
     snd_pcm_sw_params_t *sw_params = i->a.sw_params;
-              
+    #if 0
+    snd_pcm_hw_params_alloca(&hw_params);
+	snd_pcm_sw_params_alloca(&sw_params);
+    #elif 1
     if ((ret = snd_pcm_hw_params_malloc (&hw_params)) < 0) {
         fprintf (stderr, "cannot allocate hardware parameter structure (%s)\n",
              snd_strerror (ret));
@@ -536,7 +548,8 @@ int playwav(s_audinfo *i) {
         fprintf (stderr, "cannot allocate sw parameter structure (%s)\n",
              snd_strerror (ret));
         goto end;
-    }             
+    }
+    #endif
     if ((ret = snd_pcm_hw_params_any (playback_handle, hw_params)) < 0) {
         fprintf (stderr, "cannot initialize sw parameter structure (%s)\n",
              snd_strerror (ret));
@@ -557,26 +570,29 @@ int playwav(s_audinfo *i) {
              snd_strerror (ret));
         goto end;
     }
-    if ((ret = snd_pcm_hw_params_set_rate_near (playback_handle, hw_params, &(i->sr), &(i->a.dir))) < 0) {
+    if ((ret = snd_pcm_hw_params_set_rate_near (playback_handle, hw_params, &(i->sr), 0)) < 0) {
         fprintf (stderr, "cannot set sample rate (%s)\n",
              snd_strerror (ret));
         goto end;
     }
     unsigned int buffer_time = -1;
-    if ((ret = snd_pcm_hw_params_get_buffer_time_max(hw_params, &buffer_time, &(i->a.dir))) < 0) {
+    if ((ret = snd_pcm_hw_params_get_buffer_time_max(hw_params, &buffer_time, 0)) < 0) {
         fprintf (stderr, "cannot get buffer time max (%s)\n",
              snd_strerror (ret));
         goto end;
     }
-    Log("buffer_time %d us", buffer_time);
+    Log("Before: buffer_time %d us", buffer_time);
+    if (buffer_time > 500000)
+			buffer_time = 500000;
+    Log("After: buffer_time %d us", buffer_time);
     unsigned int period_time = -1;
     period_time = buffer_time / 4;
-    if ((ret = snd_pcm_hw_params_set_period_time_near(playback_handle, hw_params, &period_time, &(i->a.dir))) < 0) {
+    if ((ret = snd_pcm_hw_params_set_period_time_near(playback_handle, hw_params, &period_time, 0)) < 0) {
         fprintf (stderr, "cannot set period time (%s)\n",
              snd_strerror (ret));
         goto end;
     }
-    if ((ret = snd_pcm_hw_params_set_buffer_time_near(playback_handle, hw_params, &buffer_time, &(i->a.dir))) < 0) {
+    if ((ret = snd_pcm_hw_params_set_buffer_time_near(playback_handle, hw_params, &buffer_time, 0)) < 0) {
         fprintf (stderr, "cannot set buffer time (%s)\n",
              snd_strerror (ret));
         goto end;
@@ -594,6 +610,7 @@ int playwav(s_audinfo *i) {
         goto end;
     }
     i->a.chunk_size = chunk_size;
+    i->a.chunk_byte = chunk_size * i->wid / 8 * i->ch;
     if ((ret = snd_pcm_hw_params_get_buffer_size(hw_params, &buffer_size)) < 0) {
         fprintf (stderr, "cannot get buffer size (%s)\n",
              snd_strerror (ret));
@@ -607,11 +624,13 @@ int playwav(s_audinfo *i) {
     }
     size_t n;
     n = chunk_size;
+#if 1
     if ((ret = snd_pcm_sw_params_set_avail_min(playback_handle, sw_params, n)) < 0) {
         fprintf (stderr, "cannot set available min (%s)\n",
              snd_strerror (ret));
         goto end;
     }
+#endif
 #if 1
     n = buffer_size;
     snd_pcm_uframes_t start_threshold, stop_threshold;
@@ -635,6 +654,12 @@ int playwav(s_audinfo *i) {
     }    
     snd_pcm_hw_params_free (hw_params);
     snd_pcm_sw_params_free (sw_params);
+
+    if ((ret = snd_pcm_nonblock (playback_handle, 0)) < 0) {
+        fprintf (stderr, "cannot set parameters (%s)\n",
+             snd_strerror (ret));
+        goto end;
+    }
 #else
     alsa_prepare(i);
 #endif
@@ -654,12 +679,30 @@ int playwav(s_audinfo *i) {
 #endif
 
     idx = 0;
-    if (i->sz > i->a.chunk_size) {
-        Log("i->sz %d > bufsize %ld", i->sz, i->a.chunk_size);
-        while (idx < (i->sz - i->a.chunk_size)) {
-            //Log("idx %x %d sz %x buf %x", idx, idx, i->sz, ALSA_BUFSZ);
-            ret = snd_pcm_writei (playback_handle, i->data + idx, i->a.chunk_size);
-            //Log("ret %d", ret);
+    snd_pcm_sframes_t avail, delay;
+    if (i->sz > i->a.chunk_byte) {
+        Log("i->sz %d > bufsize %ld", i->sz, i->a.chunk_byte);
+        while (idx <= (i->sz - i->a.chunk_byte)) {
+            #if 0
+            avail = delay = 0;
+            ret = snd_pcm_avail_delay(playback_handle, &avail, &delay);
+            if (ret < 0) {
+                Log("Get status error: %d(%s)!!!!!!!!", ret, snd_strerror (ret));
+                goto end;
+            }
+            Log("idx %x %d sz %d buf %ld avail %ld delay %ld", idx, idx, i->sz, i->a.chunk_byte, avail, delay);
+            #endif
+            #if 0
+            if (avail < (i->a.chunk_size)) {
+                int delayus = i->a.chunk_byte / 2 * 1000 * 1000 / i->sr / i->ch / i->wid * 8;
+                Log("avail %ld(%ld) delay %ld, wait half frame(about %d ms)", \
+                    avail, snd_pcm_avail(playback_handle), delay, delayus/1000);
+                usleep(delayus);
+                continue;
+            }
+            #endif
+            ret = snd_pcm_writei (playback_handle, i->data + idx, i->a.chunk_byte);
+            Log("ret %d", ret);
             #if 0
             if (ret == -EPIPE) {
                 snd_pcm_status_t *status = 0;
@@ -686,20 +729,23 @@ int playwav(s_audinfo *i) {
                 }
             } else
             #endif
-            if (ret < 0) {
+            if (ret == -EAGAIN || (ret >= 0 && (size_t)ret < i->a.chunk_byte)) {
+                Log("wait: %d(%s)", ret, snd_strerror (ret));
+                snd_pcm_wait(playback_handle, 100);
+            } else if (ret < 0) {
                 Log("ret < 0: %d(%s)", ret, snd_strerror (ret));
                 ret = snd_pcm_recover(playback_handle, ret, 0);
                 Log("ret recover result: %d", ret);
             }
-            //Log("idx %x %d sz %x buf %x idx %d ret %d", idx, idx, i->sz, ALSA_BUFSZ, idx, ret);
+            //Log("idx %x %d sz %d buf %ld ret %d", idx, idx, i->sz, i->a.chunk_size, ret);
             #if 0
-            if ((ret = snd_pcm_writei (playback_handle, i->data + idx, i->a.chunk_size)) != i->a.chunk_size) {
+            if ((ret = snd_pcm_writei (playback_handle, i->data + idx, i->a.chunk_byte)) != i->a.chunk_byte) {
                 fprintf (stderr, "write to audio interface failed (%s)\n",
                      snd_strerror (ret));
                 goto end;
             }
             #endif
-            idx += i->a.chunk_size;
+            idx += i->a.chunk_byte;
         }
         Log("idx %d sz %d gap %d", idx, i->sz, i->sz - idx);
         if ((ret = snd_pcm_writei (playback_handle, i->data + idx, i->sz - idx)) != (i->sz - idx)) {
@@ -708,9 +754,9 @@ int playwav(s_audinfo *i) {
             goto end;
         }
     } else {
-        Log("i->sz %d < bufsize %ld", i->sz, i->a.chunk_size);
+        Log("i->sz %d < bufsize %ld", i->sz, i->a.chunk_byte);
         ret = snd_pcm_writei (playback_handle, i->data + idx, i->sz);
-        Log("ret %d %x, i->sz %d < bufsize %ld DONE!!!!", ret, ret, i->sz, i->a.chunk_size);
+        Log("ret %d %x, i->sz %d < bufsize %ld DONE!!!!", ret, ret, i->sz, i->a.chunk_byte);
         #if 0
         if ((ret = snd_pcm_writei (playback_handle, i->data + idx, i->sz)) != i->sz) {
                 fprintf (stderr, "write to audio interface failed (%s)\n",
