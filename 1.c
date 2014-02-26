@@ -43,18 +43,15 @@ int parsewav(s_audinfo *i);
 int alsa_prepare(s_audinfo *i);
 int alsa_play(s_audinfo *i);
 int alsa_record(s_audinfo *i);
-
 int updatewavhead(s_audinfo *i);
 int clear_struct(s_audinfo *i);
 int initnewf(s_audinfo *i);
 int initplay(s_audinfo *i);
 int initcapt(s_audinfo *i);
-
-static void signal_handler(int sig);
-
 int encode(s_audinfo *i);
 int decode(s_audinfo *i);
 int audinfo(s_audinfo *i);
+static void signal_handler(int sig);
 
 Uint16 str2int16(Uint8 *buf, int endian);
 Uint32 str2int32(Uint8 *buf, int endian);
@@ -89,12 +86,12 @@ int main(int argc, char *argv[])
             Loge("not supported operation %d", inf.op);
             break;
     }
-    if (ret < 0) goto finish;
+    if (ret != 0)
+        Loge("Error: %s(%d)", snd_strerror (ret), ret);
     
 finish:
     Log("Finishing...");
     uninit(&inf);
-   
     return 0;
 }
 
@@ -203,7 +200,6 @@ end:
     audinfo(i);
     return ret;
 }
-
 
 int newwav(s_audinfo *i)
 {
@@ -315,7 +311,7 @@ int captwav(s_audinfo *i)
     rewind(i->fpout);    
     ret = fwrite(i->head, sizeof(char), WAVHEADSZ, i->fpout);
     if (ret == WAVHEADSZ) ret = 0;
-   
+
     if (i->w.pad)
         fwrite(&(i->w.pad), sizeof(char), 1, i->fpout);
     fclose(i->fpout);
@@ -479,7 +475,6 @@ int alsa_prepare(s_audinfo *i)
              snd_strerror (ret));
         goto end;
     }
-  
 end:
     return ret;
 }
@@ -563,7 +558,7 @@ int alsa_play(s_audinfo *i)
         }
     } while (idx < i->sz);
 
-end:    
+end:
     snd_pcm_close (handle);
 end01:
     return ret;
@@ -682,7 +677,7 @@ int updatewavhead(s_audinfo *i)
     int2str32(i->head + idx, i->ns * i->ch * width, i->ibn);
     i->w.datasz = str2int32(i->head + idx, i->ibn);
     idx += 4;
-    
+
     return ret;
 }
 
@@ -777,8 +772,6 @@ void init(s_audinfo *i)
 {
     clear_struct(i);
     Log("%ld bytes cleared", sizeof(s_audinfo));
-    
-    strcpy(i->fnameo, DEFAULT_NAMEO);
     strcpy(i->a.dev, ALSA_DEV);
 }
 
