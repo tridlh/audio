@@ -40,10 +40,8 @@
 #define DEFAULT_NAMEO   "out.wav"
 
 //alsa record and play device, review with aplay -l, cat /proc/asound/cards and cat /proc/asound/devices
-#define ALSA_CAPTDEV    "hw:0,0"
-#define ALSA_PLAYDEV    "hw:0,0"
-#define ALSA_BUFSZ      1024*1
-#define ALSA_CBUFSZ     1024*ALSA_BUFSZ
+#define ALSA_DEV        "hw:0,0"
+#define ALSA_BUFSZ      1024*4
 
 #define RANGE_8         0x7F
 #define RANGE_16        0x7FFF
@@ -83,13 +81,11 @@ typedef struct {
 }	s_waveinfo;
 
 typedef struct {
-    char playdev[FILENAMESZ];
-    char captdev[FILENAMESZ];
+    char dev[FILENAMESZ];
     snd_pcm_stream_t stream;
     snd_pcm_access_t access;
-    snd_pcm_format_t format;
-    snd_pcm_t *playback_handle;    
-    snd_pcm_t *capture_handle;
+    snd_pcm_format_t format;  
+    snd_pcm_t *handle;
     snd_pcm_hw_params_t *hw_params;
     snd_pcm_sw_params_t *sw_params;
     snd_pcm_uframes_t chunk_size;
@@ -118,6 +114,8 @@ typedef struct {
 	char *data;
 	int *enc;
 	int *dec;
+    FILE *fp;
+    FILE *fpout;
 }	s_audinfo;
 
 
