@@ -48,8 +48,9 @@ int clear_struct(s_audinfo *i);
 int initnewf(s_audinfo *i);
 int initplay(s_audinfo *i);
 int initcapt(s_audinfo *i);
-int encode(s_audinfo *i);
-int decode(s_audinfo *i);
+int encode_interface(s_audinfo *i);
+int decode_interface(s_audinfo *i);
+int samplerate_conv(s_audinfo *i);
 int audinfo(s_audinfo *i);
 static void signal_handler(int sig);
 
@@ -82,13 +83,23 @@ int main(int argc, char *argv[])
         case 3:
             ret = captwav(&inf);
             break;
+        case 4:
+            ret = encode_interface(&inf);
+            break;
+        case 5:
+            ret = decode_interface(&inf);
+            break;
+        case 6:
+            ret = samplerate_conv(&inf);
+            Log("TBD...");
+            break;
         default:
             Loge("not supported operation %d", inf.op);
             break;
     }
     if (ret != 0)
         Loge("Error: %s(%d)", snd_strerror (ret), ret);
-    
+
 finish:
     Log("Finishing...");
     uninit(&inf);
@@ -229,8 +240,10 @@ int newwav(s_audinfo *i)
     double t = 0.0;
     double dt = (double)1.0 / i->sr;
     while (cnt < i->ns) {
-        val = (Uint16) (RANGE_16 * sin(2 * PI * t * i->freq));
+        val = (RANGE_16 * sin(2 * PI * t * i->freq));
         t += dt;
+        //val *= t / i->len;
+        //val = (double)cnt / i->ns * val;
         switch (i->ch) {
             case 1:
                 int2str16(i->data + cnt * width, val, i->ibn);
@@ -620,6 +633,27 @@ end01:
     return ret;
 }
 
+int encode_interface(s_audinfo *i)
+{
+    int ret = 0;
+
+    return ret;
+}
+
+int decode_interface(s_audinfo *i)
+{
+    int ret = 0;
+
+    return ret;
+}
+
+int samplerate_conv(s_audinfo *i)
+{
+    int ret = 0;
+
+    return ret;
+}
+
 int updatewavhead(s_audinfo *i)
 {
     int ret = 0;
@@ -807,10 +841,16 @@ int argproc(s_audinfo *i, int argc, char *argv[])
             {"verbose", 0, 0, 0},
             {"create", 1, 0, 'c'},
             {"file", 1, 0, 0},
+            {"new", 1, 0, 'c'},
+            {"record", 1, 0, 'r'},
+            {"play", 1, 0, 'p'},
             {"length", 1, 0, 1001},
             {"channel", 1, 0, 1002},
             {"rate", 1, 0, 1003},
             {"nonblock", 1, 0, 1004},
+            {"encode", 1, 0, 2000},
+            {"decode", 1, 0, 2001},
+            {"src", 1, 0, 2002},
             {0, 0, 0, 0}
         };
     
@@ -891,7 +931,7 @@ int argproc(s_audinfo *i, int argc, char *argv[])
         case 1001:   //length in seconds
             printf ("option %d with value '%s' len %ld\n", c, optarg, strlen(optarg));
             i->len = atoi(optarg);
-            if ((i->len < 0) || (i->len > 10)) {
+            if ((i->len < 0) || (i->len > 600)) {
                 Loge("Invalid file length: %d", i->len);
             }
             break;
@@ -907,7 +947,7 @@ int argproc(s_audinfo *i, int argc, char *argv[])
         case 1003:   //sample rate
             printf ("option %d with value '%s' len %ld\n", c, optarg, strlen(optarg));
             i->sr = atoi(optarg);
-            if ((i->sr < 0) || (i->sr > 19200)) {
+            if ((i->sr < 0) || (i->sr > 192000)) {
                 Loge("Invalid sample rate: %d", i->sr);
             }
             break;
@@ -917,6 +957,50 @@ int argproc(s_audinfo *i, int argc, char *argv[])
             i->a.nb = atoi(optarg);
             if ((i->a.nb < 0) || (i->a.nb > 1)) {
                 Loge("Invalid nonblock sign: %d", i->a.nb);
+            }
+            break;
+
+        case 2000:   //encode, usage: --encode <output filename>
+            printf ("option %d with value '%s' len %ld\n", c, optarg, strlen(optarg));
+            if (strlen(optarg) <  FILENAMESZ) {
+                memset(i->fnamei, 0, FILENAMESZ);
+                strncpy(i->fnamei, DEFAULT_NAMEI, strlen(DEFAULT_NAMEI));
+                memset(i->fnameo, 0, FILENAMESZ);
+                strncpy(i->fnameo, optarg, strlen(optarg));
+                printf("encode: %s -> %s\n", i->fnamei, i->fnameo);
+                i->op = 4;
+            } else {
+                Loge("file name length over limit: %d", FILENAMESZ);
+            }
+            break;
+
+        case 2001:   //decode, usage: --decode <input filename>
+            printf ("option %d with value '%s' len %ld\n", c, optarg, strlen(optarg));
+            if (strlen(optarg) <  FILENAMESZ) {
+                memset(i->fnamei, 0, FILENAMESZ);
+                strncpy(i->fnamei, optarg, strlen(optarg));
+                memset(i->fnameo, 0, FILENAMESZ);
+                strncpy(i->fnameo, DEFAULT_NAMEO, strlen(DEFAULT_NAMEO));
+                printf("encode: %s -> %s\n", i->fnamei, i->fnameo);
+                i->op = 5;
+            } else {
+                Loge("file name length over limit: %d", FILENAMESZ);
+            }
+            break;
+
+        case 2002:   //sample rate convert, usage: --src <target samplerate>
+            printf ("option %d with value '%s' len %ld\n", c, optarg, strlen(optarg));
+            i->target_samplerate = atoi(optarg);
+            switch (i->target_samplerate){
+                case 8000:
+                case 16000:
+                case 44100:
+                case 48000:
+                    i->op = 6;
+                    break;
+                default:
+                    Loge("Unsupported sample rate: %d", i->target_samplerate);
+                    break;
             }
             break;
 

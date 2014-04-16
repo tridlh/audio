@@ -35,7 +35,7 @@
 #define DEFAULT_CHNUM   2
 #define DEFAULT_SRATE   44100
 #define DEFAULT_LENTH   2
-#define DEFAULT_FREQ    300
+#define DEFAULT_FREQ    1000
 #define DEFAULT_NAMEI   "in.wav"
 #define DEFAULT_NAMEO   "out.wav"
 
@@ -105,6 +105,7 @@ typedef struct {
 	int ns;			//number of sample
 	int sz;			//data size in bytes
 	int fsize;      //file size in bytes
+	int target_samplerate;  //target samplerate of src
 	char fnamei[FILENAMESZ];
 	char fnameo[FILENAMESZ];
     s_alsainfo a;
